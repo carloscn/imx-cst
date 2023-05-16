@@ -18,12 +18,14 @@
 # List the api object files to be built
 OBJECTS += \
 	adapt_layer_openssl.o \
+	autox_sign_with_hsm.o \
 	pkey.o \
 	cert.o \
 	ssl_wrapper.o
 
 OBJECTS_BACKEND_SSL += \
 	adapt_layer_openssl.o \
+	autox_sign_with_hsm.o \
 	pkey.o \
 	cert.o \
 	ssl_wrapper.o

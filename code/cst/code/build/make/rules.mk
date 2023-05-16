@@ -36,7 +36,6 @@ LFLAGS  := -t
 	$(CC) -MM $(CFLAGS) -c $< -o $(subst .o,.d,$@)
 	# compile
 	$(CC) $(CFLAGS) -DFILE_${*F} -c $< -o $@
-
 %.c: %.y
 	@echo "Create parser $@"
 	$(YACC) $(YFLAGS) -o $@ $<
