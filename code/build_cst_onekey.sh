@@ -18,7 +18,7 @@ if [ ! -d "openssl" ]; then
         exit 2
     fi
 
-    make openssl -j16
+    OSTYPE=linux64 make openssl -j16
     if [ $? -ge 1 ]; then
         exit 2
     fi
@@ -26,7 +26,8 @@ fi
 
 cd cst
 
-bash -c "export OS_TYPE=linux64 make os_bin"
+#bash -c "export OS_TYPE=linux64 make os_bin"
+OSTYPE=linux64 make os_bin
 if [ $? -ge 1 ]; then
     exit 2
 fi

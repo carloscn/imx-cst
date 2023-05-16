@@ -67,6 +67,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "ssl_backend.h"
 #include "pkcs11_backend.h"
 
+#define LOG_DEBUG printf("[CARLOS_DEBUG] "); printf
+extern void utils_print_bio_array(uint8_t *buffer, size_t len, char* msg);
+
 /*===========================================================================
                                 MACROS
 =============================================================================*/
@@ -1370,6 +1373,9 @@ int32_t create_sig_file(char *file, char *cert_file,
     int32_t ret_val = SUCCESS; /**< Return and keep track of error status */
     FILE *fh = NULL;           /**< File pointer */
 
+    LOG_DEBUG("create_sig_file file %s\n", file);
+    LOG_DEBUG("create_sig_file CERT file %s\n", cert_file);
+
     hash = hab_hash_alg_to_hash_alg_type(g_hash_alg);
     /**
      * sig_size as input to gen_sig_data shows the size of buffer for
@@ -1406,6 +1412,10 @@ int32_t create_sig_file(char *file, char *cert_file,
          * certificate in cert_file. The signature data will be returned in
          * sig and size of signature data in sig_size
          */
+        // LOG_DEBUG("call gen_sig_data file %s\n", file);
+        // LOG_DEBUG("call gen_sig_data cert file %s\n", cert_file);
+        // LOG_DEBUG("call gen_sig_data hash type %d\n", hash);
+        // LOG_DEBUG("call gen_sig_data sig fmt %d\n", sig_fmt);
         ret_val = gen_sig_data(file, cert_file, hash, sig_fmt,
             sig, (size_t *)&sig_size, g_mode);
         if (ret_val != SUCCESS)
@@ -1416,6 +1426,7 @@ int32_t create_sig_file(char *file, char *cert_file,
             log_error_msg(cert_file);
             break;
         }
+        // LOG_DEBUG("call gen_sig_data sig size %zu\n", sig_size);
 
         /**
          * We use the same file to store signature data, opening it again
@@ -1460,6 +1471,7 @@ int32_t create_sig_file(char *file, char *cert_file,
  *
  * @retval #SUCCESS if everything goes fine
  */
+extern void utils_print_bio_array(uint8_t *buffer, size_t len, char* msg);
 static int update_offsets_in_csf(uint8_t * buf, command_t * cmd_csf, uint32_t csf_len)
 {
     int32_t cert_sig_offset = 0;    /**< Used to keep track of certificate or
@@ -1499,7 +1511,6 @@ static int update_offsets_in_csf(uint8_t * buf, command_t * cmd_csf, uint32_t cs
     /* Finally, update the csf command offset */
     uint8_t offset_bytes[] = { EXPAND_UINT32((uint32_t)cert_sig_offset) };
     memcpy(&buf[cmd_csf->start_offset_cert_sig], offset_bytes, 4);
-
     /* done with update offsets in csf */
 
     return SUCCESS;
@@ -1513,7 +1524,7 @@ static int update_offsets_in_csf(uint8_t * buf, command_t * cmd_csf, uint32_t cs
  *
  * @par Operation
  *
- * @param[in] backend,  pointer to backend type string 
+ * @param[in] backend,  pointer to backend type string
  *
  * @retval #SUCCESS if everything goes fine
  */
@@ -1548,7 +1559,7 @@ static int set_backend(char *backend)
     printf("Unsupported backend: %s\n",backend);
     return ERROR_INVALID_ARGUMENT;
   }
-  
+
   return SUCCESS;
 }
 
@@ -1602,6 +1613,7 @@ static void print_usage(void)
     printf("    cst -o out_csf.bin -c cert.pem -i hab4.csf \n\n");
     printf("4. To print program license information, use\n");
     printf("    cst --license \n\n");
+    printf("5. This is the carlos modified version. \n\n");
 }
 
 /** Process command line arguments for code signing tool (cst)
@@ -1766,6 +1778,8 @@ int32_t main(int32_t argc, char* argv[])
         printf("Unable to open %s", g_in_csf_file);
         return 0;
     }
+
+    LOG_DEBUG("open file %s\n", g_in_csf_file);
     // set lex to read from file handler instead of defaulting to STDIN
     yyin = fi;
     if ((ret_val = yyparse()) == SUCCESS)
