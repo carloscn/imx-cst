@@ -80,7 +80,78 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 /*===========================================================================
                           LOCAL FUNCTION PROTOTYPES
 =============================================================================*/
+#define ENABLE_VERIFY 1
 
+#if ENABLE_VERIFY
+int32_t
+verify_sig_data_cms(const char *in_file,
+                    const char *cert_ca,
+                    const char *cert_signer,
+                    const char *sig_file,
+                    hash_alg_t hash_alg);
+static int32_t count = 0;
+static char signed_file_name[256];
+#endif /* ENABLE_VERIFY */
+
+#define LOG_DEBUG printf("[CARLOS_DEBUG] "); printf
+
+#define DUMP_WIDTH 16
+static void bio_dump(const char *s, int len)
+{
+    char buf[160+1] = {0};
+    char tmp[20] = {0};
+    unsigned char ch;
+    int32_t i, j, rows;
+
+#ifdef TRUNCATE
+    int32_t trunc = 0;
+    for(; (len > 0) && ((s[len-1] == ' ') || (s[len-1] == '\0')); len--)
+        trunc++;
+#endif
+
+    rows = (len / DUMP_WIDTH);
+    if ((rows * DUMP_WIDTH) < len)
+        rows ++;
+    for (i = 0; i < rows; i ++) {
+        /* start with empty string */
+        buf[0] = '\0';
+        sprintf(tmp, "%04x - ", i * DUMP_WIDTH);
+        strcpy(buf, tmp);
+        for (j = 0; j < DUMP_WIDTH; j ++) {
+            if (((i * DUMP_WIDTH) + j) >= len) {
+                strcat(buf,"   ");
+            } else {
+                ch = ((unsigned char)*(s + i * DUMP_WIDTH + j)) & 0xff;
+                sprintf(tmp, "%02x%c" , ch, j == 7 ? '-':' ');
+                strcat(buf, tmp);
+            }
+        }
+        strcat(buf, "  ");
+        for(j = 0;j < DUMP_WIDTH;j ++) {
+            if (((i * DUMP_WIDTH) + j) >= len)
+                break;
+            ch = ((unsigned char)*(s + i * DUMP_WIDTH + j)) & 0xff;
+            sprintf(tmp, "%c", ((ch >= ' ')&&(ch <= '~')) ? ch : '.');
+            strcat(buf, tmp);
+        }
+        strcat(buf, "\n");
+        printf("%s", buf);
+    }
+#ifdef TRUNCATE
+    if (trunc > 0) {
+        sprintf(buf,"%04x - <SPACES/NULS>\n",len+trunc);
+        printf("%s", buf);
+    }
+#endif
+}
+
+void utils_print_bio_array(uint8_t *buffer, size_t len, char* msg)
+{
+    printf("\n");
+    printf("%s: the len is %zu\n", msg, len);
+    bio_dump((const char *)buffer, len);
+    printf("\n");
+}
 /** Converts hash_alg to an equivalent NID value for OpenSSL
  *
  * @param[in] hash_alg Hash digest algorithm from #hash_alg_t
@@ -466,6 +537,7 @@ int32_t cms_to_buf(CMS_ContentInfo *cms, BIO * bio_in, uint8_t * data_buffer,
     int32_t err_value = CAL_SUCCESS;
     BIO * bio_out = NULL;
     BUF_MEM buffer_memory;            /**< Used with BIO functions */
+    (void) bio_in;
 
     buffer_memory.length = 0;
     buffer_memory.data = (char*)data_buffer;
@@ -486,7 +558,11 @@ int32_t cms_to_buf(CMS_ContentInfo *cms, BIO * bio_in, uint8_t * data_buffer,
             err_value = CAL_CRYPTO_API_ERROR;
             break;
         }
-
+        // if (!i2d_CMS_bio(bio_out, cms)) {
+        //     display_error("Unable to convert CMS signature to DER format");
+        //     err_value = CAL_CRYPTO_API_ERROR;
+        //     break;
+        // }
         /* Get the size of bio out in data_buffer_size */
         *data_buffer_size = BIO_ctrl_pending(bio_out);
     }while(0);
@@ -496,6 +572,242 @@ int32_t cms_to_buf(CMS_ContentInfo *cms, BIO * bio_in, uint8_t * data_buffer,
     return err_value;
 }
 
+#if ENABLE_VERIFY
+
+static int copy_file(const char *in, const char *out)
+{
+    char cmd[1024];
+    sprintf(cmd, "cp -rf %s %s", in, out);
+    return system(cmd);
+}
+
+static int check_verified_signer(CMS_ContentInfo* cms, X509_STORE* store)
+{
+    int i, ret = 1;
+
+    X509_STORE_CTX *ctx = X509_STORE_CTX_new();
+    STACK_OF(CMS_SignerInfo) *infos = CMS_get0_SignerInfos(cms);
+    STACK_OF(X509)* cms_certs = CMS_get1_certs(cms);
+
+    if (!ctx) {
+        LOG_DEBUG("Failed to allocate verification context");
+        return ret;
+    }
+
+    for (i = 0; i < sk_CMS_SignerInfo_num(infos) && ret != 0; ++i) {
+        CMS_SignerInfo *si = sk_CMS_SignerInfo_value(infos, i);
+        X509 *signer = NULL;
+
+        CMS_SignerInfo_get0_algs(si, NULL, &signer, NULL, NULL);
+        if (!X509_STORE_CTX_init(ctx, store, signer, cms_certs)) {
+            LOG_DEBUG("Failed to initialize signer verification operation");
+            break;
+        }
+
+        X509_STORE_CTX_set_default(ctx, "smime_sign");
+        if (X509_verify_cert(ctx) > 0) {
+            LOG_DEBUG("Verified signature %d in signer sequence", i);
+            ret = 0;
+        } else {
+            LOG_DEBUG("Failed to verify certificate %d in signer sequence", i);
+        }
+
+        X509_STORE_CTX_cleanup(ctx);
+    }
+
+    X509_STORE_CTX_free(ctx);
+
+    return ret;
+}
+
+static int cms_verify_callback(int ok, X509_STORE_CTX *ctx) {
+    int cert_error = X509_STORE_CTX_get_error(ctx);
+
+    if (!ok) {
+        switch (cert_error) {
+        case X509_V_ERR_CERT_HAS_EXPIRED:
+        case X509_V_ERR_CERT_NOT_YET_VALID:
+            ok = 1;
+            break;
+        default:
+            break;
+        }
+    }
+
+    return ok;
+}
+
+X509_STORE *load_cert_chain(const char *file)
+{
+    X509_STORE *castore = X509_STORE_new();
+    if (!castore) {
+        return NULL;
+    }
+
+    /*
+     * Set error callback function for verification of CRTs and CRLs in order
+     * to ignore some errors depending on configuration
+     */
+    X509_STORE_set_verify_cb(castore, cms_verify_callback);
+
+    BIO *castore_bio = BIO_new_file(file, "r");
+    if (!castore_bio) {
+        LOG_DEBUG("failed: BIO_new_file(%s)\n", file);
+        return NULL;
+    }
+
+    int crt_count = 0;
+    X509 *crt = NULL;
+    do {
+        crt = PEM_read_bio_X509(castore_bio, NULL, 0, NULL);
+        if (crt) {
+            crt_count++;
+            char *subj = X509_NAME_oneline(X509_get_subject_name(crt), NULL, 0);
+            char *issuer = X509_NAME_oneline(X509_get_issuer_name(crt), NULL, 0);
+            LOG_DEBUG("Read PEM #%d: %s %s\n", crt_count, issuer, subj);
+            free(subj);
+            free(issuer);
+            if (X509_STORE_add_cert(castore, crt) == 0) {
+                LOG_DEBUG("Adding certificate to X509_STORE failed\n");
+                BIO_free(castore_bio);
+                X509_STORE_free(castore);
+                return NULL;
+            }
+        }
+    } while (crt);
+    BIO_free(castore_bio);
+
+    if (crt_count == 0) {
+        X509_STORE_free(castore);
+        return NULL;
+    }
+    LOG_DEBUG("The crt_count is %d\n", crt_count);
+
+    return castore;
+}
+
+/*--------------------------
+  gen_sig_data_cms
+---------------------------*/
+int32_t
+verify_sig_data_cms(const char *in_file,
+                    const char *cert_ca,
+                    const char *cert_signer,
+                    const char *sig_file,
+                    hash_alg_t hash_alg)
+
+{
+    BIO             *bio_in = NULL;   /**< BIO for in_file data */
+    BIO             *bio_sigfile = NULL;   /**< BIO for sigfile data */
+    X509_STORE      *store = NULL;     /**< Ptr to X509 certificate read data */
+    X509            *signer_cert = NULL;
+    CMS_ContentInfo *cms = NULL;      /**< Ptr used with openssl API */
+    const EVP_MD    *sign_md = NULL;  /**< Ptr to digest name */
+    int32_t err_value = CAL_SUCCESS;  /**< Used for return value */
+    int32_t rc = 0;
+    /** Array to hold error string */
+    char err_str[MAX_ERR_STR_BYTES];
+    /* flags set to match Openssl command line options for generating
+     *  signatures
+     */
+    int32_t         flags = CMS_DETACHED | CMS_NOCERTS |
+                            CMS_NOSMIMECAP | CMS_BINARY;
+
+    /* Set signature message digest alg */
+    sign_md = EVP_get_digestbyname(get_digest_name(hash_alg));
+    if (sign_md == NULL) {
+        display_error("Invalid hash digest algorithm");
+        return CAL_INVALID_ARGUMENT;
+    }
+
+    do
+    {
+        store = load_cert_chain(cert_ca);
+        if (store == NULL) {
+            snprintf(err_str, MAX_ERR_STR_BYTES-1,
+                     "Cannot open certificate file %s", cert_ca);
+            display_error(err_str);
+            err_value = CAL_CRYPTO_API_ERROR;
+            break;
+        }
+
+        signer_cert = read_certificate(cert_signer);
+        if (!signer_cert) {
+            snprintf(err_str, MAX_ERR_STR_BYTES-1,
+                     "Cannot open certificate file %s", cert_signer);
+            display_error(err_str);
+            err_value = CAL_CRYPTO_API_ERROR;
+            break;
+        }
+
+        /* Read signature Data */
+        if (!(bio_sigfile = BIO_new_file(sig_file, "rb"))) {
+            snprintf(err_str, MAX_ERR_STR_BYTES-1,
+                     "Cannot open signature file %s", sig_file);
+            display_error(err_str);
+            err_value = CAL_CRYPTO_API_ERROR;
+            break;
+        }
+
+        flags |= CMS_NO_SIGNER_CERT_VERIFY;
+
+        /* Parse the DER-encoded CMS message */
+        cms = d2i_CMS_bio(bio_sigfile, NULL);
+        if (!cms) {
+            display_error("Cannot be parsed as DER-encoded CMS signature blob.\n");
+            err_value = CAL_CRYPTO_API_ERROR;
+            break;
+        }
+
+        if (!CMS_add1_cert(cms, signer_cert)) {
+            display_error("Cannot be inserted signer_cert into cms.\n");
+            err_value = CAL_CRYPTO_API_ERROR;
+            break;
+        }
+
+        /* Open the content file (data which was signed) */
+        if (!(bio_in = BIO_new_file(in_file, "rb"))) {
+            snprintf(err_str, MAX_ERR_STR_BYTES-1,
+                     "Cannot open data which was signed  %s", in_file);
+            display_error(err_str);
+            err_value = CAL_CRYPTO_API_ERROR;
+            break;
+        }
+
+        rc = CMS_verify(cms, NULL, store, bio_in, NULL, flags);
+        if (!rc) {
+            display_error("Failed to verify the file!\n");
+            err_value = CAL_CRYPTO_API_ERROR;
+            break;
+        }
+
+        if (check_verified_signer(cms, store)) {
+            snprintf(err_str, MAX_ERR_STR_BYTES-1,
+                     "Authentication of all signatures failed!\n");
+            display_error(err_str);
+            err_value = CAL_CRYPTO_API_ERROR;
+            break;
+        }
+
+        LOG_DEBUG("Verified OK!\n");
+
+    } while(0);
+
+    /* Print any Openssl errors */
+    if (err_value != CAL_SUCCESS) {
+        ERR_print_errors_fp(stderr);
+    }
+
+    /* Close everything down */
+    if (cms) CMS_ContentInfo_free(cms);
+    if (store) X509_STORE_free(store);
+    if (bio_in) BIO_free(bio_in);
+    if (bio_sigfile)   BIO_free(bio_sigfile);
+
+    return err_value;
+}
+
+#endif /* ENABLE_VERIFY */
 /*--------------------------
   gen_sig_data_cms
 ---------------------------*/
@@ -587,6 +899,17 @@ gen_sig_data_cms(const char *in_file,
         /* Write CMS signature to output buffer - DER format */
         err_value = cms_to_buf(cms, bio_in, sig_buf, sig_buf_bytes, flags);
     } while(0);
+
+#if ENABLE_VERIFY
+    do {
+        char out_name[1024] = {0};
+        sprintf(out_name, "signed_data_%d.bin", count ++);
+        BIO *yy = BIO_new_file(out_name, "wb");
+        BIO_write(yy, sig_buf, *sig_buf_bytes);
+        BIO_free(yy);
+        strcpy(signed_file_name, out_name);
+    } while (0);
+#endif /* ENABLE_VERIFY */
 
     /* Print any Openssl errors */
     if (err_value != CAL_SUCCESS) {
@@ -951,8 +1274,23 @@ int32_t ssl_gen_sig_data(const char* in_file,
                                hash_alg, sig_buf, (int32_t *)sig_buf_bytes);
     }
     else if (SIG_FMT_CMS == sig_fmt) {
+        copy_file(in_file, "to_signed_data.bin");
         err = gen_sig_data_cms(in_file, cert_file, key_file,
                                hash_alg, sig_buf, sig_buf_bytes);
+#if ENABLE_VERIFY
+        if (err != CAL_SUCCESS) {
+            goto finish;
+        }
+        const char *ca_cert = "/home/haochenwei/work/onboard/nxp_rt1170/secure_boot/tools/flashprog/keys/tmpca.cer";
+        printf("\n-------------------------[Verify infomation]----------------------\n");
+        printf("original file  : %s\n", "to_signed_data.bin");
+        printf("signature file : %s\n", signed_file_name);
+        printf("cert           : %s\n", cert_file);
+        printf("ca cert        : %s\n", ca_cert);
+        printf("hash_alg       : %d\n", hash_alg);
+        printf("--------------------------------------------------------------------\n\n");
+        err = verify_sig_data_cms("to_signed_data.bin", ca_cert, cert_file, signed_file_name, hash_alg);
+#endif /* ENABLE_VERIFY */
     }
     else if (SIG_FMT_ECDSA == sig_fmt) {
         err = gen_sig_data_ecdsa(in_file, key_file,
@@ -963,7 +1301,7 @@ int32_t ssl_gen_sig_data(const char* in_file,
         display_error("Invalid signature format");
         return CAL_INVALID_ARGUMENT;
     }
-
+finish:
     free(key_file);
     return err;
 }
