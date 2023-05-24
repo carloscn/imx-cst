@@ -82,7 +82,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define SIGN_SERVER_SSL_CERT "sign_server.crt"
 #define SIGN_SERVER_SSL_KEY "sign_server.key"
 #define SIGN_SERVER_ROOT_CA "root_ca.crt"
-#define SIGN_SERVER_API_URL "https://dev.xsec-gateway.autox.tech/v1/signServer/cms/sign?s32g=true"
+#define SIGN_SERVER_API_URL "https://dev.xsec-gateway.autox.tech/v1/signServer/cms/sign?type=rt117x"
 #define SIGN_SERVER_CA_URL "https://dev.ca.autox.tech/ejbca/publicweb/webdist/certdist?cmd=cachain&caid=-238079556&format=pem"
 
 int32_t autox_gen_sig_data_cms(const char* in_file,
@@ -1502,11 +1502,14 @@ int32_t autox_gen_sig_data_cms(const char* in_file,
     LOG_DEBUG("Bypass NXP signing, makes use of the AUTOX's signer!!!!\n");
 
     char *dup_in_file_name = NULL;
+    int32_t csf_or_image = 0;
 
     if (0 == strcmp(in_file, FILE_SIG_IMG_DATA)) {
         dup_in_file_name = SIGN_SERVER_SIGNED_IMAGE_IN_NAME;
+        csf_or_image = 0;
     } else if (0 == strcmp(in_file, FILE_SIG_CSF_DATA)) {
         dup_in_file_name = SIGN_SERVER_SIGNED_CSF_IN_NAME;
+        csf_or_image = 1;
     } else {
         snprintf(err_str, MAX_ERR_STR_BYTES-1,
                 "Internal Error, No %s or %s set!", FILE_SIG_IMG_DATA, FILE_SIG_CSF_DATA);
@@ -1532,7 +1535,7 @@ int32_t autox_gen_sig_data_cms(const char* in_file,
     }
 
     err = autox_request_sign_data(1,
-                                  0,
+                                  csf_or_image,
                                   in_file,
                                   sig_buf,
                                   sig_buf_bytes,
