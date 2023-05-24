@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "algorithm": "c",
-        "stat.h": "c"
+        "stat.h": "c",
+        "autox_sign_with_hsm.h": "c"
     }
 }

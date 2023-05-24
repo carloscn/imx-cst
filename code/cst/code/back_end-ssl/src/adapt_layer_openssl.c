@@ -69,8 +69,29 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <openssl/applink.c>
 #endif
 
-#define ENABLE_VERIFY 0
+#define ENABLE_VERIFY 1
 #define AUTOX_SIGN 1
+
+#if ENABLE_VERIFY || AUTOX_SIGN
+typedef enum CSF_OR_IMAGE_T {
+    FILE_TYPE_IMAGE = 0,
+    FILE_TYPE_CSF = 1,
+    FILE_TYPE_ERR
+} CSF_IMG;
+
+static CSF_IMG get_image_type(const char *in_file)
+{
+    if (0 == strcmp(in_file, FILE_SIG_IMG_DATA)) {
+        return FILE_TYPE_IMAGE;
+    } else if (0 == strcmp(in_file, FILE_SIG_CSF_DATA)) {
+        return FILE_TYPE_CSF;
+    } else {
+        return FILE_TYPE_ERR;
+    }
+}
+#endif /* ENABLE_VERIFY || AUTOX_SIGN */
+
+#define LOG_DEBUG printf("[AUTOX_SIGN] "); printf
 
 #if AUTOX_SIGN
 #include "autox_sign_with_hsm.h"
@@ -82,7 +103,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define SIGN_SERVER_SSL_CERT "sign_server.crt"
 #define SIGN_SERVER_SSL_KEY "sign_server.key"
 #define SIGN_SERVER_ROOT_CA "root_ca.crt"
-#define SIGN_SERVER_API_URL "https://dev.xsec-gateway.autox.tech/v1/signServer/cms/sign?s32g=true"
+#define SIGN_SERVER_API_IMG_URL "https://dev.xsec-gateway.autox.tech:443/v1/signServer/cms/sign/test?key=IMG"
+#define SIGN_SERVER_API_CSF_URL "https://dev.xsec-gateway.autox.tech:443/v1/signServer/cms/sign/test?key=CSF"
 #define SIGN_SERVER_CA_URL "https://dev.ca.autox.tech/ejbca/publicweb/webdist/certdist?cmd=cachain&caid=-238079556&format=pem"
 
 int32_t autox_gen_sig_data_cms(const char* in_file,
@@ -91,8 +113,6 @@ int32_t autox_gen_sig_data_cms(const char* in_file,
                                char *sig_out_file);
 
 static char autox_signed_file_name[1024] = {0};
-
-#define LOG_DEBUG printf("[AUTOX_SIGN] "); printf
 
 #endif /* AUTOX_SIGN */
 static int32_t autox_write_binary_all(const char *filename, uint8_t *buffer, size_t o_len);
@@ -1291,12 +1311,12 @@ int32_t ssl_gen_sig_data(const char* in_file,
             goto finish;
         }
 #else
+        char nxp_signed_file_name[1024];
         err = gen_sig_data_cms(in_file, cert_file, key_file,
                                hash_alg, sig_buf, sig_buf_bytes);
         do {
-            char sig_name[1024];
-            sprintf(sig_name, "signed_%s", in_file);
-            (void)autox_write_binary_all(sig_name, sig_buf, *sig_buf_bytes);
+            sprintf(nxp_signed_file_name, "signed_%s", in_file);
+            (void)autox_write_binary_all(nxp_signed_file_name, sig_buf, *sig_buf_bytes);
         } while (0);
 #endif /* AUTOX_SIGN */
     printf("Sign Done! Signature size is %lu\n", *sig_buf_bytes);
@@ -1304,16 +1324,39 @@ int32_t ssl_gen_sig_data(const char* in_file,
         if (err != CAL_SUCCESS) {
             goto finish;
         }
-        const char *autox_ca_cert = "autox_ca_chains.crt";
-        const char *autox_signer_cert = "autox_signer.crt";
+
+        CSF_IMG type = get_image_type(in_file);
+        const char *ca_cert = NULL;
+        const char *signer_cert = NULL;
+        const char *sign_out_file = NULL;
+
+        if (type == FILE_TYPE_ERR) {
+            printf("[err] file type error!\n");
+            err = -1;
+            goto finish;
+        }
+#if AUTOX_SIGN
+        ca_cert = "keys/ca_cert_chains.crt";
+        signer_cert = (type == FILE_TYPE_IMAGE) ? \
+                      "keys/IMG1_1_sha256_2048_65537_v3_usr_crt.pem" : \
+                      "keys/CSF1_1_sha256_2048_65537_v3_usr_crt.pem";
+        sign_out_file = (const char *)autox_signed_file_name;
+#else /* NXP_SIGN */
+        ca_cert = "keys/ca_cert_chains.crt";
+        signer_cert = (type == FILE_TYPE_IMAGE) ? \
+                      "keys/IMG1_1_sha256_2048_65537_v3_usr_crt.pem" : \
+                      "keys/CSF1_1_sha256_2048_65537_v3_usr_crt.pem";
+        sign_out_file = (const char *)nxp_signed_file_name;
+#endif /* AUTOX_SIGN */
+
         printf("\n-------------------------[Verify infomation]----------------------\n");
         printf("original file  : %s\n", in_file);
-        printf("signature file : %s\n", autox_signed_file_name);
-        printf("ca cert        : %s\n", autox_ca_cert);
-        printf("signer cert    : %s\n", autox_signer_cert);
+        printf("signature file : %s\n", sign_out_file);
+        printf("ca cert        : %s\n", ca_cert);
+        printf("signer cert    : %s\n", signer_cert);
         printf("hash_alg       : %d\n", hash_alg);
         printf("--------------------------------------------------------------------\n\n");
-        err = verify_sig_data_cms(in_file, autox_ca_cert, autox_signer_cert, autox_signed_file_name, hash_alg);
+        verify_sig_data_cms(in_file, ca_cert, signer_cert, sign_out_file, hash_alg);
 #endif /* ENABLE_VERIFY */
     }
     else if (SIG_FMT_ECDSA == sig_fmt) {
@@ -1417,7 +1460,7 @@ static int32_t autox_request_sign_data(int32_t srk_num,
     const char *ssl_cert = SIGN_SERVER_SSL_CERT;
     const char *ssl_key = SIGN_SERVER_SSL_KEY;
     const char *root_ca = SIGN_SERVER_ROOT_CA;
-    const char *url_api = SIGN_SERVER_API_URL;
+    const char *url_api = NULL;
 
     UNUSED(srk_num);
     UNUSED(in_file);
@@ -1445,6 +1488,10 @@ static int32_t autox_request_sign_data(int32_t srk_num,
     signed_file = csf_or_image ? \
                   SIGN_SERVER_SIGNED_CSF_OUT_NAME : \
                   SIGN_SERVER_SIGNED_IMAGE_OUT_NAME;
+    url_api = csf_or_image ? \
+                  SIGN_SERVER_API_CSF_URL : \
+                  SIGN_SERVER_API_IMG_URL;
+
     strcpy(out_name, signed_file);
 
     err = autox_sign_with_hsm(in_file,
@@ -1502,14 +1549,12 @@ int32_t autox_gen_sig_data_cms(const char* in_file,
     LOG_DEBUG("Bypass NXP signing, makes use of the AUTOX's signer!!!!\n");
 
     char *dup_in_file_name = NULL;
+    CSF_IMG type = get_image_type(in_file);
 
-    if (0 == strcmp(in_file, FILE_SIG_IMG_DATA)) {
-        dup_in_file_name = SIGN_SERVER_SIGNED_IMAGE_IN_NAME;
-    } else if (0 == strcmp(in_file, FILE_SIG_CSF_DATA)) {
-        dup_in_file_name = SIGN_SERVER_SIGNED_CSF_IN_NAME;
-    } else {
+    if (type >= FILE_TYPE_ERR) {
         snprintf(err_str, MAX_ERR_STR_BYTES-1,
                 "Internal Error, No %s or %s set!", FILE_SIG_IMG_DATA, FILE_SIG_CSF_DATA);
+        display_error(err_str);
         err = CAL_INVALID_ARGUMENT;
         goto finish;
     }
@@ -1519,20 +1564,26 @@ int32_t autox_gen_sig_data_cms(const char* in_file,
     if (err != 0) {
         snprintf(err_str, MAX_ERR_STR_BYTES-1,
                 "input parameters error!");
+        display_error(err_str);
         err = CAL_FAILED_FILE_CREATE;
         goto finish;
     }
+
+    dup_in_file_name = (type == FILE_TYPE_IMAGE) ? \
+                       SIGN_SERVER_SIGNED_IMAGE_IN_NAME:
+                       SIGN_SERVER_SIGNED_CSF_IN_NAME;
 
     err = autox_write_binary_all(dup_in_file_name, buffer, o_len);
     if (err != 0) {
         snprintf(err_str, MAX_ERR_STR_BYTES-1,
                 "autox_write_binary_all error!");
+        display_error(err_str);
         err = CAL_FAILED_FILE_CREATE;
         goto finish;
     }
 
     err = autox_request_sign_data(1,
-                                  0,
+                                  type,
                                   in_file,
                                   sig_buf,
                                   sig_buf_bytes,
