@@ -96,15 +96,16 @@ static CSF_IMG get_image_type(const char *in_file)
 #if AUTOX_SIGN
 #include "autox_sign_with_hsm.h"
 
-#define SIGN_SERVER_SIGNED_CSF_OUT_NAME "signed_file_csf.bin"
-#define SIGN_SERVER_SIGNED_IMAGE_OUT_NAME "signed_file_image.bin"
-#define SIGN_SERVER_SIGNED_CSF_IN_NAME "to_sign_file_csf.bin"
-#define SIGN_SERVER_SIGNED_IMAGE_IN_NAME "to_sign_file_image.bin"
-#define SIGN_SERVER_SSL_CERT "sign_server.crt"
+#define SIGN_SERVER_SIGNED_CSF_OUT_NAME "autox_signed_file_csf.bin"
+#define SIGN_SERVER_SIGNED_IMAGE_OUT_NAME "autox_signed_file_image.bin"
+#define SIGN_SERVER_SIGNED_CSF_IN_NAME "autox_to_sign_file_csf.bin"
+#define SIGN_SERVER_SIGNED_IMAGE_IN_NAME "autox_to_sign_file_image.bin"
+#define SIGN_SERVER_SSL_CSF_CERT "sign_server.crt"
+#define SIGN_SERVER_SSL_IMG_CERT "sign_server.crt"
 #define SIGN_SERVER_SSL_KEY "sign_server.key"
 #define SIGN_SERVER_ROOT_CA "root_ca.crt"
-#define SIGN_SERVER_API_IMG_URL "https://dev.xsec-gateway.autox.tech:443/v1/signServer/cms/sign/test?key=IMG"
-#define SIGN_SERVER_API_CSF_URL "https://dev.xsec-gateway.autox.tech:443/v1/signServer/cms/sign/test?key=CSF"
+#define SIGN_SERVER_API_IMG_URL "https://dev.xsec-gateway.autox.tech:443/v1/signServer/cms/sign?type=xnavimg"
+#define SIGN_SERVER_API_CSF_URL "https://dev.xsec-gateway.autox.tech:443/v1/signServer/cms/sign?type=xnavcsf"
 #define SIGN_SERVER_CA_URL "https://dev.ca.autox.tech/ejbca/publicweb/webdist/certdist?cmd=cachain&caid=-238079556&format=pem"
 
 int32_t autox_gen_sig_data_cms(const char* in_file,
@@ -747,7 +748,7 @@ verify_sig_data_cms(const char *in_file,
      */
     int32_t         flags = CMS_DETACHED | CMS_NOCERTS |
                             CMS_NOSMIMECAP | CMS_BINARY;
-
+    //int32_t         flags = CMS_NOSIGS | CMS_NOINTERN | CMS_NOVERIFY | CMS_BINARY;
     /* Set signature message digest alg */
     sign_md = EVP_get_digestbyname(get_digest_name(hash_alg));
     if (sign_md == NULL) {
@@ -783,8 +784,6 @@ verify_sig_data_cms(const char *in_file,
             break;
         }
 
-        flags |= CMS_NO_SIGNER_CERT_VERIFY;
-
         /* Parse the DER-encoded CMS message */
         cms = d2i_CMS_bio(bio_sigfile, NULL);
         if (!cms) {
@@ -810,7 +809,10 @@ verify_sig_data_cms(const char *in_file,
 
         rc = CMS_verify(cms, NULL, store, bio_in, NULL, flags);
         if (!rc) {
-            display_error("Failed to verify the file!\n");
+            snprintf(err_str, MAX_ERR_STR_BYTES-1,
+                     "\n\n\n!!!!!!!!! Failed to verify the signature file [%s] !!!!!!!!\n\n",
+                     sig_file);
+            display_error(err_str);
             err_value = CAL_CRYPTO_API_ERROR;
             break;
         }
@@ -1312,10 +1314,10 @@ int32_t ssl_gen_sig_data(const char* in_file,
         char nxp_signed_file_name[1024];
         err = gen_sig_data_cms(in_file, cert_file, key_file,
                                hash_alg, sig_buf, sig_buf_bytes);
-        do {
-            sprintf(nxp_signed_file_name, "signed_%s", in_file);
-            (void)autox_write_binary_all(nxp_signed_file_name, sig_buf, *sig_buf_bytes);
-        } while (0);
+
+        sprintf(nxp_signed_file_name, "nxp_signed_%s", in_file);
+        (void)autox_write_binary_all(nxp_signed_file_name, sig_buf, *sig_buf_bytes);
+
 #endif /* AUTOX_SIGN */
     printf("Sign Done! Signature size is %lu\n", *sig_buf_bytes);
 #if ENABLE_VERIFY
@@ -1454,7 +1456,7 @@ static int32_t autox_request_sign_data(int32_t srk_num,
     char err_str[MAX_ERR_STR_BYTES];
     char *signed_file = NULL;
     uint8_t *buffer = NULL;
-    const char *ssl_cert = SIGN_SERVER_SSL_CERT;
+    const char *ssl_cert = NULL;
     const char *ssl_key = SIGN_SERVER_SSL_KEY;
     const char *root_ca = SIGN_SERVER_ROOT_CA;
     const char *url_api = NULL;
@@ -1482,6 +1484,9 @@ static int32_t autox_request_sign_data(int32_t srk_num,
     //     goto finish;
     // }
 
+    ssl_cert = csf_or_image ? \
+                  SIGN_SERVER_SSL_CSF_CERT : \
+                  SIGN_SERVER_SSL_IMG_CERT;
     signed_file = csf_or_image ? \
                   SIGN_SERVER_SIGNED_CSF_OUT_NAME : \
                   SIGN_SERVER_SIGNED_IMAGE_OUT_NAME;
